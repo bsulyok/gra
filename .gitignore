@@ -1,0 +1,14 @@
+# user defined
+
+
+
+# byte-compiled
+__pycache__/
+*.py[cod]
+
+
+# pyenv
+.python-version
+
+# jupyter notebook
+.ipynb_checkpoints
