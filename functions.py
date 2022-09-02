@@ -2,10 +2,62 @@ import numpy as np
 from plotly import graph_objects as go
 from plotly.subplots import make_subplots
 
-def draw_layout_compparison(adjacency_matrix: np.ndarray, coord_orig: np.ndarray, coord_emb: np.ndarray, save_name: str = None) -> None:
+import numpy as np
+from plotly import graph_objects as go
+from plotly.subplots import make_subplots
+
+def get_distance(coord: np.ndarray) -> np.ndarray:
+    d_theta = np.pi - np.abs(np.pi - np.abs(coord[:, 1]-coord[:, np.newaxis, 1]))
+    dist = np.cosh(coord[:, 0]) * np.cosh(coord[:, np.newaxis, 0])
+    dist -= np.sinh(coord[:, 0]) * np.sinh(coord[:, np.newaxis, 0]) * np.cos(d_theta)
+    return dist
+
+def greedy_closest_neighbour(adjacency_list: np.ndarray, distance: np.ndarray) -> np.ndarray:
+    gcn = np.array([neighbours[np.argmin(distance[neighbours], axis=0)] for neighbours in adjacency_list])
+    np.fill_diagonal(gcn, np.arange(distance.shape[0]))
+    return gcn
+
+def greedy_destination(gcn: np.ndarray, num_grs_iter: int):
+    arange = np.arange(gcn.shape[1])
+    for _ in range(num_grs_iter):
+        gcn = gcn[gcn, arange]
+    return gcn
+
+def drip_down(gcn: np.ndarray, gd: np.ndarray, distance: np.ndarray) -> np.ndarray:
+    N = gcn.shape[0]
+    source, target = np.where(gd != np.arange(N))
+    next_hop = gcn[source, target]
+    dest_source = gd[source, target]
+    dest_next_hop = gd[next_hop, target]
+    need_to_move = distance[dest_source, target] > distance[dest_next_hop, target]
+    gd[source[need_to_move], target[need_to_move]] = gd[next_hop[need_to_move], target[need_to_move]]
+    return gd
+
+def get_clogging_count(adjacency_matrix, coord):
+    distance = get_distance(coord)
+    adjacency_list = np.array([np.where(neigh)[0] for neigh in adjacency_matrix], dtype=object)
+    N = adjacency_matrix.shape[0]
+    num_grs_iter = int(np.ceil(np.log2(N-1)))
+    gcn = greedy_closest_neighbour(adjacency_list, distance)
+    gd = greedy_destination(gcn.copy(), num_grs_iter)
+    gd = drip_down(gcn, gd, distance)
+    return np.bincount(gd.flatten()) - np.sum(gd == np.arange(N), axis=0)
+
+def draw_layout_compparison(adjacency_matrix: np.ndarray, coord_orig: np.ndarray, coord_emb: np.ndarray, marker_size_scale: float = 200, marker_size_min: float = 5, save_name: str = None) -> None:
     r_emb, theta_emb = coord_emb.T
     r_orig, theta_orig = coord_orig.T
+    
+    N = adjacency_matrix.shape[0]
+    N_pairs = N * (N-1) / 2
 
+    clogging_count_orig = get_clogging_count(adjacency_matrix, coord_orig)
+    marker_size_orig = np.sqrt(clogging_count_orig / N_pairs)
+    marker_size_orig = np.clip(marker_size_orig*marker_size_scale, a_min=marker_size_min, a_max=None)
+    
+    clogging_count_emb = get_clogging_count(adjacency_matrix, coord_emb)
+    marker_size_emb = np.sqrt(clogging_count_emb / N_pairs)
+    marker_size_emb = np.clip(marker_size_emb*marker_size_scale, a_min=marker_size_min, a_max=None)
+    
     fig = make_subplots(rows=1, cols=2, specs=[[{'type': 'polar'}, {'type': 'polar'}]])
 
     for source, target in zip(*np.where(np.triu(adjacency_matrix))):
@@ -40,9 +92,9 @@ def draw_layout_compparison(adjacency_matrix: np.ndarray, coord_orig: np.ndarray
             theta=theta_orig,
             thetaunit='radians',
             mode='markers',
-            marker_size=10,
+            marker_size=marker_size_orig,
             marker_colorscale='Rainbow',
-            marker_color='blue'
+            marker_color=theta_orig/2/np.pi
         ),
         row=1,
         col=1
@@ -53,7 +105,7 @@ def draw_layout_compparison(adjacency_matrix: np.ndarray, coord_orig: np.ndarray
             theta=theta_emb,
             thetaunit='radians',
             mode='markers',
-            marker_size=10,
+            marker_size=marker_size_emb,
             marker_colorscale='Rainbow',
             marker_color=theta_orig/2/np.pi
         ),
@@ -77,14 +129,7 @@ def draw_layout_compparison(adjacency_matrix: np.ndarray, coord_orig: np.ndarray
         fig.show()
     else:
         fig.write_image(save_name)
-
-
-def get_distance(coord: np.ndarray) -> np.ndarray:
-    d_theta = np.pi - np.abs(np.pi - np.abs(coord[:, 1]-coord[:, np.newaxis, 1]))
-    dist = np.cosh(coord[:, 0]) * np.cosh(coord[:, np.newaxis, 0])
-    dist -= np.sinh(coord[:, 0]) * np.sinh(coord[:, np.newaxis, 0]) * np.cos(d_theta)
-    return dist
-
+        
 
 def get_conditional_connection_probability(adjacency_matrix: np.ndarray, coord: np.ndarray, n_bins: int) -> np.ndarray:
     indices = np.triu_indices(adjacency_matrix.shape[0], 1)
@@ -126,42 +171,14 @@ def draw_conditional_connection_probability(adjacency_matrix: np.ndarray, coord_
     else:
         fig.write_image(save_name)
 
-        
-def greedy_closest_neighbour(adjacency_list: np.ndarray, distance: np.ndarray) -> np.ndarray:
-    gcn = np.array([neighbours[np.argmin(distance[neighbours], axis=0)] for neighbours in adjacency_list])
-    np.fill_diagonal(gcn, np.arange(distance.shape[0]))
-    return gcn
 
-
-def greedy_destination(gcn: np.ndarray, num_grs_iter: int):
-    arange = np.arange(gcn.shape[1])
-    for _ in range(num_grs_iter):
-        gcn = gcn[gcn, arange]
-    return gcn
-
-
-def drip_down(gcn: np.ndarray, gd: np.ndarray, distance: np.ndarray) -> np.ndarray:
-    N = gcn.shape[0]
-    source, target = np.where(gd != np.arange(N))
-    next_hop = gcn[source, target]
-    dest_source = gd[source, target]
-    dest_next_hop = gd[next_hop, target]
-    need_to_move = distance[dest_source, target] > distance[dest_next_hop, target]
-    gd[source[need_to_move], target[need_to_move]] = gd[next_hop[need_to_move], target[need_to_move]]
-    return gd
-        
-        
-def draw_clogging_representation(adjacency_matrix: np.ndarray, coord: np.ndarray, save_name: str = None) -> None:
-    distance = get_distance(coord)
-    adjacency_list = np.array([np.where(neigh)[0] for neigh in adjacency_matrix], dtype=object)
-    N = adjacency_matrix.shape[0]
-    num_grs_iter = int(np.ceil(np.log2(N-1)))
-    gcn = greedy_closest_neighbour(adjacency_list, distance)
-    gd = greedy_destination(gcn.copy(), num_grs_iter)
-    gd = drip_down(gcn, gd, distance)
-    clogging_count = np.bincount(gd.flatten()) - np.sum(gd == np.arange(N), axis=0)
+def draw_clogging_representation(adjacency_matrix: np.ndarray, coord: np.ndarray, marker_size_scale: float = 200, marker_size_min: float = 5, save_name: str = None) -> None:
     
-    marker_size = np.sqrt(clogging_count / np.max(clogging_count))
+    N = adjacency_matrix.shape[0]
+    N_pairs = N * (N-1) / 2
+    clogging_count = get_clogging_count(adjacency_matrix, coord_emb)
+    marker_size = np.sqrt(clogging_count / N_pairs)
+    marker_size = np.clip(marker_size*marker_size_scale, a_min=marker_size_min, a_max=None)
     
     r, theta = coord.T
 
