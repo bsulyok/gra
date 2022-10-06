@@ -1,0 +1,15 @@
+name
+clogging_dependent
+var_step_size_2
+var_step_size_3
+var_step_size_4
+var_step_size_5
+keep_coord_global_move
+random_init_global_move
+keep_coord_normalized_local_move
+random_init_normalized_local_move
+random_init_isotropic
+keep_coord_local_move
+target_dependent
+baseline_unopt
+baseline
