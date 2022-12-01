@@ -4,6 +4,7 @@ from plotly.subplots import make_subplots
 import pandas as pd
 from pathlib import Path
 from itertools import product
+from scipy.stats import truncnorm, norm
 
 GRAPH_NAMES = [
     'football',
@@ -20,7 +21,8 @@ GRAPH_NAMES = [
 ANNEALER_NAMES = [
     'BaseAnnealer',
     'SourceDependent',
-    'TargetDependent'
+    'TargetDependent',
+    'CloggingDependent'
 ]
 
 
@@ -271,46 +273,39 @@ def clogging_representation(adjacency_matrix: np.ndarray, coord: np.ndarray, mar
         fig.write_image(save_name)
 
 
-def annealer_comparison(graphs=GRAPH_NAMES, annealers=ANNEALER_NAMES, coord='random', results_path=Path('../results'), save_name=None):
-    fig = make_subplots(rows=2, cols=4, subplot_titles=graphs)
-    for (graph_idx, graph), (annealer_idx, annealer) in product(enumerate(graphs), enumerate(annealers)):
-        log_path = results_path / f'{graph}_{annealer}_{coord}.csv'
-        if Path(log_path).exists():
-            mean, std = np.loadtxt(log_path)
-            mean = mean[::100]
-            std = std[::100]
-            t=np.arange(mean.shape[0])*100
-            fig.add_scattergl(
-                x=t,
-                y=mean,
-                mode='lines',
-                legendgroup=annealer,
-                name=annealer,
-                line_color=COLORS[annealer_idx],
-                showlegend=True if graph_idx == 0 else False,
-                row=graph_idx//4+1,
-                col=graph_idx%4+1
-            )
-    fig.update_layout(
-        width=1200,
-        height=600
-    )
-    if save_name is None:
-        fig.show()
-    else:
-        fig.write_image(save_name)
-        
-
-def annealer_comparison(coord_name, annealer_names=ANNEALER_NAMES, results_path=Path('../results'), save_name=None):
+def annealer_comparison(meta, annealer_names=ANNEALER_NAMES, save_name=None):
+    experiments_root = Path('/home/bsulyok/documents/projects/gra/experiments')
     fig = make_subplots(rows=2, cols=4, subplot_titles=GRAPH_NAMES)
-    for (graph_idx, graph_name), (annealer_idx, annealer_name) in product(enumerate(GRAPH_NAMES), enumerate(annealer_names)):
-        log_path = results_path / f'{graph_name}_{annealer_name}_{coord_name}.csv'
-        if Path(log_path).exists():
-            mean, std = np.loadtxt(log_path)
-            step = max(100, mean.shape[0]) // 100
-            mean = mean[::step]
-            std = std[::step]
+    
+    for graph_idx, graph_name in enumerate(GRAPH_NAMES):
+        for annealer_idx, annealer_name in enumerate(annealer_names):
+            experiments_meta = meta[(meta['graph_name'] == graph_name) & (meta['annealer_name'] == annealer_name)]
+            if np.all(experiments_meta['grs'].values == 1.0):
+                steps = experiments_meta['step'].values.max()
+            else:
+                steps = experiments_meta[experiments_meta['grs'] < 1.0]['step'].min()
+            logs = np.ones((experiments_meta.shape[0], steps))
+
+            for idx, (experiment_id, experiment) in enumerate(experiments_meta.iterrows()):
+                log_path = experiments_root / 'exp' / str(experiment_id) / 'log.csv'
+                if log_path.exists():
+                    log = np.loadtxt(log_path)
+                    log_length = log.shape[0]
+                    if log_length == steps:
+                        logs[idx] = log
+                    elif log_length > steps:
+                        logs[idx] = log[0: steps]
+                    elif log_length < steps :
+                        logs[idx, 0: log_length] = log
+                        if experiment['grs'] < 1.0:
+                            logs[idx, log_length:] = np.nan
+
+            step = log.shape[0] // 100
+            logs = logs[:, ::step]
+            mean = np.mean(logs, axis=0)
+            std = np.std(logs, axis=0)
             t=np.arange(mean.shape[0]) * step
+
             fig.add_scattergl(
                 x=np.hstack([t, t[::-1]]),
                 y=np.hstack([mean+std,(mean-std)[::-1]]),
@@ -337,15 +332,11 @@ def annealer_comparison(coord_name, annealer_names=ANNEALER_NAMES, results_path=
                 col=graph_idx%4+1
             )
     fig.update_layout(
-        width=1200,
-        height=600,
-        showlegend=True
+        width=1600,
+        height=750
     )
-    #fig.update_yaxes(
-    #    range=[0,1]
-    #)
     if save_name is None:
-        fig.show()
+        return fig
     else:
         fig.write_image(save_name)
         
@@ -379,29 +370,54 @@ def polar_heatmap_plot(coord, radial_resolution, angular_resolution, marker_colo
     
     return bar_polar
 
+    
+def vertex_move_heatmap(r, theta, N=128, resolution=100, save_name=None):
 
-def vertex_move_heatmap(coord, moved_vertices=[0], radial_resolution=20, angular_resolution=100, sample_size=500, save_name=None):
-    marker_colorscales = ['Reds', 'Greens', 'Blues']
-    fig = go.Figure()
-    for idx, moved_vertex in enumerate(moved_vertices):
-        clip_min, clip_max = 1, 2*np.log(coord.shape[0])
-        loc, scale = coord[moved_vertex, 0], 1
-        a, b = (clip_min - loc) / scale, (clip_max - loc) / scale
-        r = truncnorm.rvs(a=a, b=b, loc=loc, scale=scale, size=sample_size)
-        theta = np.random.normal(loc=coord[moved_vertex, 1], scale=np.pi/4, size=sample_size) % (2*np.pi)
-        fig.add_trace(polar_heatmap_plot(np.stack([r, theta]).T, radial_resolution, angular_resolution, marker_colorscales[idx]))
-        print(marker_colorscales[idx])
-        
-    fig.update_polars(
-        radialaxis_showticklabels=False,
-        angularaxis_showticklabels=False,
-        bgcolor='rgba(255,255,255,1)'
+    R_max = 2*np.log(N)
+
+    ls = np.linspace(-R_max, R_max, resolution)
+    x, y = np.meshgrid(ls, ls)
+    theta_array = np.arctan2(y, x)
+    r_array = np.sqrt(x*x+y*y)
+
+    clip_min, clip_max = 0, R_max
+    loc, scale = r, 1
+    a, b = (clip_min - loc) / scale, (clip_max - loc) / scale
+    radial_prob = truncnorm.pdf(x=r_array, a=a, b=b, loc=loc, scale=scale)
+    angular_prob = norm.pdf(x=theta_array, loc=theta, scale=np.pi/4)
+    angular_prob += norm.pdf(x=theta_array+2*np.pi, loc=theta, scale=np.pi/4)
+    angular_prob += norm.pdf(x=theta_array-2*np.pi, loc=theta, scale=np.pi/4)
+    prob = angular_prob * radial_prob
+    prob /= prob.sum()
+    prob[r_array > R_max] = np.nan
+    #prob = np.ma.array(prob, mask=r_array > R_max, fill_value=np.nan)
+
+    fig = go.Figure(go.Heatmap(
+        z=prob,
+        coloraxis='coloraxis',
+    ))
+
+    circumference_theta = np.linspace(0, 2*np.pi, 100)
+    circumference_r = np.full(100, resolution//2)
+    fig.add_scattergl(
+        x=np.cos(circumference_theta) * circumference_r + resolution//2,
+        y=np.sin(circumference_theta) * circumference_r + resolution//2,
+        mode='lines',
+        line_color='black'
     )
+
+    fig.update_xaxes(showticklabels=False)  
+    fig.update_yaxes(showticklabels=False)  
 
     fig.update_layout(
         width=800,
-        height=800,
+        height=860,
+        coloraxis_showscale=False,
+        coloraxis_colorscale='Greens',
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)'
     )
+    
     if save_name is None:
         fig.show()
     else:

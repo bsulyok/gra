@@ -2,8 +2,8 @@ import numpy as np
 from .base_model import BaseAnnealer
 
 class OnlyNonadjacent(BaseAnnealer):
-    def __init__(self, adjacency_matrix, coord=None):
-        super().__init__(adjacency_matrix, coord)
+    def __init__(self, **args):
+        super().__init__(**args)
     
     def greedy_routing_score(self, gd: np.ndarray) -> float:
         successful = np.sum(gd == np.arange(self.N))

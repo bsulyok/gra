@@ -2,8 +2,8 @@ import numpy as np
 from .base_annealer import BaseAnnealer
     
 class SourceDependent(BaseAnnealer):
-    def __init__(self, graph_name, coord_name):
-        super().__init__(graph_name, coord_name)
+    def __init__(self, **args):
+        super().__init__(**args)
     
     def select_for_move(self) -> int:
         unsuccessful = np.sum(self.gd != np.arange(self.N), axis=1)
