@@ -10,7 +10,7 @@ from copy import deepcopy
 import time
 import uuid
 import yaml
-from ..utils.pso import PSO
+from ..pso import PSO
 from ..utils.graph import Graph
 from ..utils.embedding import mercator_embedding, random_embedding, stupid_random_embedding
 from ..utils.functions import initial_distance, initial_greedy_closest_neighbour, initial_greedy_destination, greedy_routing_score

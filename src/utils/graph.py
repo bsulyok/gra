@@ -1,5 +1,5 @@
 from typing import Callable
-from .pso import PSO
+from ..pso import PSO
 import networkx as nx
 from pathlib import Path
 import numpy as np
