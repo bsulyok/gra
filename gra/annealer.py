@@ -74,11 +74,12 @@ def embed(
     coords_dict = coords or embedding.random(G)
     coords = np.array([coords_dict[v] for v in G])
     maxiter = maxiter or 100 * len(G)
-    temperature = temperature or 1/(np.arange(1, maxiter+1))
+    if temperature is None:
+        temperature = lambda step: 1/(step)
     with TemporaryDirectory() as experiment_path:
         annealer = Annealer(
             state_generator=state_generator(spadjm=spadjm),
-            target_function=target_function(spadjm, exclude_neighbours=exclude_neighbours, distance_function=native_disk_distance),
+            target_function=target_function(spadjm, exclude_neighbours=exclude_neighbours, distance_function=distance_function),
             experiment_path=Path(experiment_path),
         )
         initial_state = annealer.target_function.initial_state(coords)

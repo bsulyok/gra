@@ -195,50 +195,6 @@ class GreedyRoutingSuccessRate(EmbeddingScoreFunction):
         
         return score
 
-    def recompute_score2(self, state: EmbeddingState, previous_state: EmbeddingState, update: bool) -> float:
-        moved_vertices = np.where(np.any(state.coords != previous_state.coords, axis=1))[0]
-        neighbours = np.unique(self.spadjm[moved_vertices].tocoo().col)
-
-        distance = previous_state.distance.copy()
-        mv_dist = self.distance_function(state.coords[moved_vertices], state.coords[:, None])
-        distance[moved_vertices] = mv_dist.T
-        distance[:, moved_vertices] = mv_dist
-
-        closest_neighbour = previous_state.closest_neighbour.copy()
-        closest_neighbour[neighbours] = np.array([neigh[np.argmin(distance[neigh], axis=0)] for neigh in self.adjl[neighbours]])
-        closest_neighbour[:, moved_vertices] = np.argmin(self.madjm + distance[moved_vertices], axis=1)[:, np.newaxis]
-        np.fill_diagonal(closest_neighbour, self.col)
-        
-        changed = np.any(closest_neighbour[neighbours] != previous_state.closest_neighbour[neighbours], axis=0)
-        changed[moved_vertices] = True
-        successful = previous_state.successful.copy()
-        successful[:, changed] = False
-        np.fill_diagonal(successful, True)
-
-        vertex = np.arange(self.N) * (self.N+1)
-        vertex = vertex[changed]
-
-        while vertex.size:
-            target, source = vertex // self.N, vertex % self.N
-            neigh_mat = self.spadjm[source].tocoo()
-            t = target[neigh_mat.row]
-            s = source[neigh_mat.row]
-            v = neigh_mat.col
-            is_closest = closest_neighbour[v, t] == s
-            t, s, v = t[is_closest], s[is_closest], v[is_closest]
-            successful[v, t] = successful[s, t]
-            vertex = self.N * t + v
-
-        score = successful[self.indices].mean()
-
-        if update:
-            state.distance = distance
-            state.closest_neighbour = closest_neighbour
-            state.successful = successful
-            state.score = score
-        
-        return score
-
 
 class EdgePredictionAUROC(EmbeddingScoreFunction):
     def __init__(self,
