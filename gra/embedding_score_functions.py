@@ -207,7 +207,7 @@ class EdgePredictionAUROC(EmbeddingScoreFunction):
         self.target = adjm[self.row, self.col]
         self.distance_function = distance_function
 
-    def __call__(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
         distance = state.distance if state.distance is not None else self.distance_function(state.coords, state.coords[:, None])
         return roc_auc_score(self.target, -distance[self.row, self.col])
     
@@ -223,7 +223,7 @@ class EdgePredictionAUPRC(EmbeddingScoreFunction):
         self.target = adjm[self.row, self.col]
         self.distance_function = distance_function
 
-    def __call__(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
         distance = state.distance if state.distance is not None else self.distance_function(state.coords, state.coords[:, None])
         return average_precision_score(self.target, -distance[self.row, self.col])
     
@@ -239,7 +239,7 @@ class MappingAccuracy(EmbeddingScoreFunction):
         self.target = spl[self.row, self.col]
         self.distance_function = distance_function
 
-    def __call__(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
         distance = state.distance if state.distance is not None else self.distance_function(state.coords, state.coords[:, None])
         return spearmanr(self.target, distance[self.row, self.col]).correlation
 
@@ -260,7 +260,7 @@ class GreedyRoutingScore(EmbeddingScoreFunction):
         self.adjl = np.array([row.indices for row in self.spadjm], dtype=object)
 
 
-    def __call__(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
         distance = self.distance_function(state.coords, state.coords[:, None])
         closest_neighbour = np.array([row[state.distance[row].argmin(axis=0)] for row in self.adjl])
         np.fill_diagonal(closest_neighbour, np.arange(self.N))
@@ -303,7 +303,7 @@ class GreedyRoutingEfficiency(EmbeddingScoreFunction):
         self.adjl = np.array([row.indices for row in self.spadjm], dtype=object)
 
 
-    def __call__(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
         distance = self.distance_function(state.coords, state.coords[:, None])
         closest_neighbour = np.array([row[state.distance[row].argmin(axis=0)] for row in self.adjl])
         np.fill_diagonal(closest_neighbour, np.arange(self.N))
@@ -327,114 +327,30 @@ class GreedyRoutingEfficiency(EmbeddingScoreFunction):
         
         return np.mean(distance[self.indices] / projected_greedy_path_length[self.indices])
 
-    
-#####################################################################################################################
 
-class GreedyRoutingSuccessRateOld(EmbeddingScoreFunction):
-    def __init__(self, spadjm, exclude_neighbours=True, distance_function=native_disk_distance, coords=None):
-        self.spadjm = spadjm
-        self.N = self.spadjm.shape[0]
-        self.distance_function = distance_function
-        spadjm_coo = self.spadjm.tocoo()
-        self.indices = ~np.eye(self.N, dtype=bool)
-        if exclude_neighbours:
-            self.indices[spadjm_coo.row, spadjm_coo.col] = False
+class VertexHeatmapScore(EmbeddingScoreFunction):
+    def __init__(self,
+            target_function: EmbeddingScoreFunction,
+            resolution: int = 10
+        ):
+        self.target_function = target_function
+        self.N = self.target_function.N
+        r_max = 2 * np.log(self.N)
+        ls = np.linspace(-r_max, r_max, resolution)
+        x, y = np.meshgrid(ls, ls)
+        x, y = x.flatten(), y.flatten()
+        inside_of_the_circle = np.sqrt(x*x + y*y)  < r_max+0.01
+        x, y = x[inside_of_the_circle], y[inside_of_the_circle]
+        self.x, self.y = x, y
 
-        self.col = np.arange(self.N)
-        self.num_iter = int(np.ceil(np.log2(self.N-1)))
-        self.adjl = np.array([row.indices for row in self.spadjm], dtype=object)
-        
-        distance = self.distance_function(coords, coords[:, None])
-        closest_neighbour = np.array([row[distance[row].argmin(axis=0)] for row in self.adjl])
-        np.fill_diagonal(closest_neighbour, self.col)
-        destination = closest_neighbour.copy()
-        for _ in range(self.num_iter):
-            destination = destination[destination, self.col]
-        success = destination == self.col
-        score = success[self.indices].mean()
-
-        self.coords = coords
-        self.distance = distance
-        self.closest_neighbour = closest_neighbour
-        self.destination = destination
-        self.success = success
-        self.score = score        
-
-    def propose(self, proposed_coords: np.ndarray) -> None:
-        '''
-        Compute score and related variables using the known coordinates.
-        '''
-        moved_vertices = np.where(np.any(proposed_coords != self.coords, axis=1))[0]
-        neigh = np.unique(np.hstack(self.adjl[moved_vertices]))
-
-        # recalculate distance
-        proposed_distance = self.distance.copy()
-        mv_dist = self.distance_function(proposed_coords[moved_vertices], proposed_coords[:, None])
-        proposed_distance[moved_vertices] = mv_dist.T
-        proposed_distance[:, moved_vertices] = mv_dist
-
-        # recalculate closest neighbours
-        propsed_closest_neighbour = self.closest_neighbour.copy()
-        propsed_closest_neighbour[neigh] = np.array([row[proposed_distance[row].argmin(axis=0)] for row in self.adjl[neigh]])
-        propsed_closest_neighbour[neigh, neigh] = neigh
-        propsed_closest_neighbour[:, moved_vertices] = np.array([row[proposed_distance[row][:, moved_vertices].argmin(axis=0)] for row in self.adjl])
-        propsed_closest_neighbour[moved_vertices, moved_vertices] = moved_vertices
-
-        # recalculate greedy routing destination
-        proposed_destination = propsed_closest_neighbour.copy()
-        for _ in range(self.num_iter):
-            proposed_destination = proposed_destination[proposed_destination, self.col]
-
-        # identify successful paths
-        proposed_success = proposed_destination == self.col
-
-        # calculate greedy routing success rate
-        proposed_score = proposed_success[self.indices].mean()
-
-        # save the variables for the proposed change
-        self.proposed_coords = proposed_coords
-        self.proposed_distance = proposed_distance
-        self.proposed_closest_neighbour = propsed_closest_neighbour
-        self.proposed_destination = proposed_destination
-        self.proposed_success = proposed_success
-        self.proposed_score = proposed_score
-
-    def accept(self) -> None:
-        '''
-        Apply the proposed change.
-        '''
-        self.coords = self.proposed_coords
-        self.distance = self.proposed_distance
-        self.closest_neighbour = self.proposed_closest_neighbour
-        self.destination = self.proposed_destination
-        self.success = self.proposed_success
-        self.score = self.proposed_score
-
-    def score_(G: nx.Graph, coords_dict: dict, exclude_neighbours=True, distance_function=native_disk_distance):
-        coords = np.array([coords_dict[v] for v in G])
-
-        N = len(G)
-        spadjm = nx.adjacency_matrix(G)
-        spadjm_coo = spadjm.tocoo()
-        indices = ~np.eye(N, dtype=bool)
-        if exclude_neighbours:
-            indices[spadjm_coo.row, spadjm_coo.col] = False
-
-        dist = distance_function(coords, coords[:, None])
-        seen = np.eye(N, dtype=bool)
-        successful = np.eye(N, dtype=bool)
-        col = np.arange(N)
-
-        closest_neighbour = np.array([row.indices[dist[row.indices].argmin(axis=0)] for row in spadjm])
-        np.fill_diagonal(closest_neighbour, col)
-        for row in np.argsort(dist, axis=0):
-            cn = closest_neighbour[row, col]
-            successful[row, col] = successful[cn, col]
-            seen[row, col] = True
-            asd = spadjm[row].tocoo()
-            n, t, s = asd.col, col[asd.row], row[asd.row]
-            unseen = ~seen[n, t]
-            n, t, s = n[unseen], t[unseen], s[unseen]
-            seen[n, t] = True
-            successful[n, t] = successful[s, t]
-        return successful[indices].mean()
+    def compute_score(self, state: EmbeddingState, update: bool) -> None:
+        current_score = state.score
+        scores = []
+        for moved_vertex in range(self.N):
+            for x_, y_ in zip(self.x, self.y):
+                new_coords = state.coords.copy()
+                new_coords[moved_vertex] = x_, y_
+                scores.append(self.target_function(EmbeddingState(coords=new_coords), state))
+        score_change = np.array(scores) - current_score
+        score = np.mean(0 < score_change)
+        return score
