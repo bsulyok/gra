@@ -42,9 +42,13 @@ def _convert_to_hyperbolic(coord: np.ndarray, G: nx.Graph) -> np.ndarray:
     return coord
 
 
-def iso(G: nx.Graph, dim: int = 2, hyperbolic=False) -> Dict[Any, List]:
+def iso(G: nx.Graph, dim: int = 2, hyperbolic=True) -> Dict[Any, List]:
     N = len(G)
-    D = shortest_path(nx.adjacency_matrix(G))
+    spadjm = nx.adjacency_matrix(G)
+    spadjm.indices = spadjm.indices.astype(np.int32)
+    spadjm.indptr = spadjm.indptr.astype(np.int32)
+    D = shortest_path(spadjm)
+    
     H = np.eye(N) - 1 / N
     D = - H @ (D*D) @ H / 2
     U, S, VH = np.linalg.svd(D, full_matrices=False)
@@ -59,7 +63,10 @@ def iso(G: nx.Graph, dim: int = 2, hyperbolic=False) -> Dict[Any, List]:
 
 def nciso(G: nx.Graph, dim: int = 2, hyperbolic=True) -> Dict[Any, List]:
     N = len(G)
-    D = shortest_path(nx.adjacency_matrix(G))
+    spadjm = nx.adjacency_matrix(G)
+    spadjm.indices = spadjm.indices.astype(np.int32)
+    spadjm.indptr = spadjm.indptr.astype(np.int32)
+    D = shortest_path(spadjm)
     H = np.eye(N) - 1 / N
     D = - H @ (D*D) @ H / 2
     U, S, VH = np.linalg.svd(D, full_matrices=False)
@@ -88,7 +95,7 @@ def mercator(G: nx.Graph) -> Dict[Any, List]:
 def random(G: nx.Graph, beta: float = 0.5):
     N = len(G)
     theta = 2 * np.pi * np.random.rand(N)
-    r = (1-beta) * np.log(np.arange(1, N+1)) + beta * np.log(N)
+    r = 2 * (1-beta) * np.log(np.arange(1, N+1)) + 2 * beta * np.log(N)
     np.random.shuffle(r)
     x, y = r * np.cos(theta), r * np.sin(theta)
     coords = dict(zip(G, zip(x, y)))

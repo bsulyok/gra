@@ -7,39 +7,40 @@ from scipy.sparse import spmatrix
 from sklearn.metrics import roc_auc_score, average_precision_score
 from scipy.sparse.csgraph import shortest_path
 
-from .embedding_state_generators import EmbeddingState
+from .state_generators import State
 from .geometry import native_disk_distance
 
 
 __all__ = [
-    'EmbeddingState',
-    'EmbeddingScoreFunction',
+    'State',
+    'ScoreFunction',
     'GeometricalCongruence',
     'GreedyRoutingSuccessRate',
     'GreedyRoutingScore',
     'GreedyRoutingEfficiency',
     'EdgePredictionAUROC',
     'EdgePredictionAUPRC',
-    'MappingAccuracy'
+    'MappingAccuracy',
+    'VertexHeatmapScore'
 ]
 
 
-class EmbeddingScoreFunction(Callable):
+class ScoreFunction(Callable):
     def __init__(self):
         pass
 
-    def compute_score(self, state: EmbeddingState, update: bool) -> float:
+    def compute_score(self, state: State, update: bool) -> float:
         raise NotImplementedError
 
-    def recompute_score(self, state: EmbeddingState, previous_state: EmbeddingState, update: bool) -> float:
+    def recompute_score(self, state: State, previous_state: State, update: bool) -> float:
         raise NotImplementedError
     
-    def initial_state(self, coords: np.ndarray) -> EmbeddingState:
-        state = EmbeddingState(coords=coords)
+    def initial_state(self, coords: np.ndarray) -> State:
+        state = State(coords=coords)
         score = self.compute_score(state, update=True)
         return state
     
-    def __call__(self, state: EmbeddingState, previous_state: EmbeddingState = None, update: bool = False) -> float:
+    def __call__(self, state: State, previous_state: State = None, update: bool = False) -> float:
         if previous_state is None:
             score = self.compute_score(state=state, update=update)
         else:
@@ -47,53 +48,53 @@ class EmbeddingScoreFunction(Callable):
         return score
 
 
-class GeometricalCongruence(EmbeddingScoreFunction):
+class GeometricalCongruence(ScoreFunction):
     def __init__(self,
         spadjm: spmatrix,
         exclude_neighbours: bool = True,
         distance_function: Callable = native_disk_distance
     ):
         self.spadjm = spadjm
-        N = self.spadjm.shape[0]
+        self.N = self.spadjm.shape[0]
         self.distance_function = distance_function
         spadjm_coo = self.spadjm.tocoo()
         self.tsp_row = spadjm_coo.row
         self.tsp_col = spadjm_coo.col
-        indices = ~np.eye(N, dtype=bool)
+        indices = ~np.eye(self.N, dtype=bool)
         if exclude_neighbours:
             indices[spadjm_coo.row, spadjm_coo.col] = False
         self.indices = indices.flatten()
         
-        M = sp.csr_array((N*N, N*N))
-        path_count = np.eye(N, dtype=int).flatten()
-        next_level = np.arange(N) * (N+1)
+        M = sp.csr_array((self.N*self.N, self.N*self.N))
+        path_count = np.eye(self.N, dtype=int).flatten()
+        next_level = np.arange(self.N) * (self.N+1)
         while next_level.size:
-            source, target = next_level // N, next_level % N
+            source, target = next_level // self.N, next_level % self.N
             asd = self.spadjm[source].tocoo()
             s = source[asd.row]
             t = target[asd.row]
             n = asd.col
-            unvisited = path_count[t*N+n] == 0
+            unvisited = path_count[t*self.N+n] == 0
             s, t, n = s[unvisited], t[unvisited], n[unvisited]
-            np.add.at(path_count, t*N+n, path_count[t*N+s])
-            next_level = np.unique(t*N+n)
-            i = (t*N+n).tolist()
-            j = (s*N+n).tolist()
-            d = (path_count[t*N+s]).tolist()
-            asd2 = M[t*N+s].tocoo()
-            i += (t*N+n)[asd2.row].tolist()
+            np.add.at(path_count, t*self.N+n, path_count[t*self.N+s])
+            next_level = np.unique(t*self.N+n)
+            i = (t*self.N+n).tolist()
+            j = (s*self.N+n).tolist()
+            d = (path_count[t*self.N+s]).tolist()
+            asd2 = M[t*self.N+s].tocoo()
+            i += (t*self.N+n)[asd2.row].tolist()
             j += asd2.col.tolist()
             d += asd2.data.tolist()
             M += sp.csr_matrix((d, (i, j)), shape=M.shape)
         M = M * sp.csr_matrix(1/path_count).T
         self.M = M
 
-    def compute_score(self, state: EmbeddingState, update: bool) -> None:
+    def compute_score(self, state: State, update: bool) -> None:
         distance = self.distance_function(state.coords, state.coords[:, None])
         data = distance[self.tsp_row, self.tsp_col]
         spadjm = sp.csr_matrix((data, (self.tsp_row, self.tsp_col)), self.spadjm.shape)
         ptsp = self.M @ spadjm.toarray().flatten()
-        score = np.mean(distance.flatten()[self.indices] / ptsp[self.indices])
+        score = np.mean(distance.flatten()[self.indices] / ptsp[self.indices].clip(min=np.finfo(float).resolution))
 
         if update:
             state.distance = distance
@@ -101,7 +102,7 @@ class GeometricalCongruence(EmbeddingScoreFunction):
 
         return score
     
-    def recompute_score(self, state: EmbeddingState, previous_state: EmbeddingState, update: bool) -> None:
+    def recompute_score(self, state: State, previous_state: State, update: bool) -> None:
         moved_vertices = np.where(np.any(state.coords != previous_state.coords, axis=1))[0]
         distance = previous_state.distance.copy()
         mv_dist = self.distance_function(state.coords[moved_vertices], state.coords[:, None])
@@ -110,7 +111,7 @@ class GeometricalCongruence(EmbeddingScoreFunction):
         data = distance[self.tsp_row, self.tsp_col]
         spadjm = sp.csr_matrix((data, (self.tsp_row, self.tsp_col)), self.spadjm.shape)
         ptsp = self.M @ spadjm.toarray().flatten()
-        score = score = np.mean(state.distance.flatten()[self.indices] / ptsp[self.indices])
+        score = np.mean(distance.flatten()[self.indices] / ptsp[self.indices])
 
         if update:
             state.distance = distance
@@ -119,7 +120,7 @@ class GeometricalCongruence(EmbeddingScoreFunction):
         return score
 
 
-class GreedyRoutingSuccessRate(EmbeddingScoreFunction):
+class GreedyRoutingSuccessRate(ScoreFunction):
     def __init__(self,
         spadjm: spmatrix,
         exclude_neighbours: bool = True,
@@ -141,7 +142,7 @@ class GreedyRoutingSuccessRate(EmbeddingScoreFunction):
         self.madjm = np.full((self.N, self.N), np.inf)
         self.madjm[spadjm.toarray().astype(bool)] = 0.0
 
-    def compute_score(self, state: EmbeddingState, update: bool) -> None:
+    def compute_score(self, state: State, update: bool) -> None:
         distance = self.distance_function(state.coords, state.coords[:, None])
         closest_neighbour = np.array([row[distance[row].argmin(axis=0)] for row in self.adjl])
         np.fill_diagonal(closest_neighbour, self.col)
@@ -160,7 +161,7 @@ class GreedyRoutingSuccessRate(EmbeddingScoreFunction):
         
         return score
 
-    def recompute_score(self, state: EmbeddingState, previous_state: EmbeddingState, update: bool) -> float:
+    def recompute_score(self, state: State, previous_state: State, update: bool) -> float:
         moved_vertices = np.where(np.any(state.coords != previous_state.coords, axis=1))[0]
         neighbours = np.unique(self.spadjm[moved_vertices].tocoo().col)
 
@@ -196,7 +197,7 @@ class GreedyRoutingSuccessRate(EmbeddingScoreFunction):
         return score
 
 
-class EdgePredictionAUROC(EmbeddingScoreFunction):
+class EdgePredictionAUROC(ScoreFunction):
     def __init__(self,
         spadjm: spmatrix,
         exclude_neighbours: bool = True,
@@ -207,15 +208,14 @@ class EdgePredictionAUROC(EmbeddingScoreFunction):
         self.target = adjm[self.row, self.col]
         self.distance_function = distance_function
 
-    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: State, update: bool) -> State:
         distance = state.distance if state.distance is not None else self.distance_function(state.coords, state.coords[:, None])
         return roc_auc_score(self.target, -distance[self.row, self.col])
     
 
-class EdgePredictionAUPRC(EmbeddingScoreFunction):
+class EdgePredictionAUPRC(ScoreFunction):
     def __init__(self,
         spadjm: spmatrix,
-        exclude_neighbours: bool = True,
         distance_function: Callable = native_disk_distance
     ):
         adjm = spadjm.toarray()
@@ -223,15 +223,14 @@ class EdgePredictionAUPRC(EmbeddingScoreFunction):
         self.target = adjm[self.row, self.col]
         self.distance_function = distance_function
 
-    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: State, update: bool) -> State:
         distance = state.distance if state.distance is not None else self.distance_function(state.coords, state.coords[:, None])
         return average_precision_score(self.target, -distance[self.row, self.col])
     
 
-class MappingAccuracy(EmbeddingScoreFunction):
+class MappingAccuracy(ScoreFunction):
     def __init__(self,
         spadjm: spmatrix,
-        exclude_neighbours: bool = True,
         distance_function: Callable = native_disk_distance
     ):
         spl = shortest_path(spadjm)
@@ -239,12 +238,12 @@ class MappingAccuracy(EmbeddingScoreFunction):
         self.target = spl[self.row, self.col]
         self.distance_function = distance_function
 
-    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: State, update: bool) -> State:
         distance = state.distance if state.distance is not None else self.distance_function(state.coords, state.coords[:, None])
         return spearmanr(self.target, distance[self.row, self.col]).correlation
 
 
-class GreedyRoutingScore(EmbeddingScoreFunction):
+class GreedyRoutingScore(ScoreFunction):
     def __init__(self,
         spadjm: spmatrix,
         exclude_neighbours: bool = True,
@@ -260,7 +259,7 @@ class GreedyRoutingScore(EmbeddingScoreFunction):
         self.adjl = np.array([row.indices for row in self.spadjm], dtype=object)
 
 
-    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: State, update: bool) -> State:
         distance = self.distance_function(state.coords, state.coords[:, None])
         closest_neighbour = np.array([row[state.distance[row].argmin(axis=0)] for row in self.adjl])
         np.fill_diagonal(closest_neighbour, np.arange(self.N))
@@ -288,7 +287,7 @@ class GreedyRoutingScore(EmbeddingScoreFunction):
         return np.mean(self.shortest_path_length / greedy_path_length[self.indices])
 
 
-class GreedyRoutingEfficiency(EmbeddingScoreFunction):
+class GreedyRoutingEfficiency(ScoreFunction):
     def __init__(self,
         spadjm: spmatrix,
         exclude_neighbours: bool = True,
@@ -303,7 +302,7 @@ class GreedyRoutingEfficiency(EmbeddingScoreFunction):
         self.adjl = np.array([row.indices for row in self.spadjm], dtype=object)
 
 
-    def compute_score(self, state: EmbeddingState) -> EmbeddingState:
+    def compute_score(self, state: State, update: bool) -> State:
         distance = self.distance_function(state.coords, state.coords[:, None])
         closest_neighbour = np.array([row[state.distance[row].argmin(axis=0)] for row in self.adjl])
         np.fill_diagonal(closest_neighbour, np.arange(self.N))
@@ -325,12 +324,13 @@ class GreedyRoutingEfficiency(EmbeddingScoreFunction):
             projected_greedy_path_length[t, v] = projected_greedy_path_length[t, s] + distance[s, v]
             vertex = self.N * t + v
         
-        return np.mean(distance[self.indices] / projected_greedy_path_length[self.indices])
+        score = np.mean(distance[self.indices] / projected_greedy_path_length[self.indices].clip(min=np.finfo(float).resolution))
+        return score
 
 
-class VertexHeatmapScore(EmbeddingScoreFunction):
+class VertexHeatmapScore(ScoreFunction):
     def __init__(self,
-            target_function: EmbeddingScoreFunction,
+            target_function: ScoreFunction,
             resolution: int = 10
         ):
         self.target_function = target_function
@@ -343,14 +343,14 @@ class VertexHeatmapScore(EmbeddingScoreFunction):
         x, y = x[inside_of_the_circle], y[inside_of_the_circle]
         self.x, self.y = x, y
 
-    def compute_score(self, state: EmbeddingState, update: bool) -> None:
+    def compute_score(self, state: State, update: bool) -> None:
         current_score = state.score
         scores = []
         for moved_vertex in range(self.N):
             for x_, y_ in zip(self.x, self.y):
                 new_coords = state.coords.copy()
                 new_coords[moved_vertex] = x_, y_
-                scores.append(self.target_function(EmbeddingState(coords=new_coords), state))
+                scores.append(self.target_function(State(coords=new_coords), state))
         score_change = np.array(scores) - current_score
         score = np.mean(0 < score_change)
         return score
